@@ -842,7 +842,12 @@ export default function OATQuantitativeReasoning() {
           </div>
         </div>
 
-        {showCalculator && <Calculator onClose={() => setShowCalculator(false)} />}
+        {showCalculator && (
+          <Calculator
+            onClose={() => setShowCalculator(false)}
+            testAttemptId={attemptId}
+          />
+        )}
       </div>
     );
   };

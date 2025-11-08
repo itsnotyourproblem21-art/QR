@@ -1,232 +1,398 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 interface CalculatorProps {
   onClose: () => void;
+  testAttemptId?: string | null;
 }
 
-export default function Calculator({ onClose }: CalculatorProps) {
+interface InputHistory {
+  inputType: string;
+  inputValue: string;
+  displayValue: string;
+  sequenceNumber: number;
+}
+
+export default function Calculator({ onClose, testAttemptId }: CalculatorProps) {
   const [display, setDisplay] = useState("0");
-  const [shouldOverwrite, setShouldOverwrite] = useState(true);
-  const [acc, setAcc] = useState<number | null>(null);
-  const [op, setOp] = useState<"+" | "-" | "*" | "/" | null>(null);
-  const [memory, setMemory] = useState<number>(0);
+  const [previousValue, setPreviousValue] = useState<number | null>(null);
+  const [operation, setOperation] = useState<string | null>(null);
+  const [waitingForOperand, setWaitingForOperand] = useState(false);
+  const [memory, setMemory] = useState(0);
 
-  const toNumber = (s: string) => (Number.isFinite(Number(s)) ? Number(s) : 0);
+  // Memory logging state
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [history, setHistory] = useState<InputHistory[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const sequenceRef = useRef(0);
 
-  const format = (n: number) => {
-    if (!Number.isFinite(n)) return "Error";
-    let s = n.toString();
-    if (Math.abs(n) >= 1e12 || (Math.abs(n) > 0 && Math.abs(n) < 1e-9)) {
-      s = n.toExponential(8);
+  // Initialize session on mount
+  useEffect(() => {
+    initializeSession();
+    return () => {
+      // Close session on unmount
+      if (sessionId) {
+        closeSession();
+      }
+    };
+  }, []);
+
+  /**
+   * Initialize a new calculator session in the database
+   * Creates a session record that will store all calculator interactions
+   */
+  const initializeSession = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('calculator_sessions')
+        .insert({
+          test_attempt_id: testAttemptId || null,
+          started_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        setSessionId(data.id);
+        console.log('Calculator session started:', data.id);
+      }
+    } catch (err) {
+      console.error('Error initializing calculator session:', err);
     }
-    return s.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   };
 
-  const compute = (a: number, b: number, o: string | null) => {
-    switch (o) {
-      case "+": return a + b;
-      case "-": return a - b;
-      case "*": return a * b;
-      case "/": return b === 0 ? Infinity : a / b;
-      default: return b;
+  /**
+   * Close the calculator session when user closes calculator
+   * Updates the ended_at timestamp
+   */
+  const closeSession = async () => {
+    if (!sessionId) return;
+
+    try {
+      await supabase
+        .from('calculator_sessions')
+        .update({ ended_at: new Date().toISOString() })
+        .eq('id', sessionId);
+
+      console.log('Calculator session ended');
+    } catch (err) {
+      console.error('Error closing calculator session:', err);
     }
   };
 
-  const inputDigit = (d: string) => {
-    console.log('=== inputDigit START ===');
-    console.log('Input digit:', d);
-    console.log('Current display:', display);
-    console.log('shouldOverwrite:', shouldOverwrite);
+  /**
+   * Log an input action to the database
+   * Captures every button press with context
+   *
+   * @param inputType - Type of input: 'digit', 'operator', 'function', 'equals', 'clear', 'memory'
+   * @param inputValue - The actual button value (e.g., '7', '+', 'sqrt')
+   * @param displayValue - Current calculator display after this input
+   */
+  const logInput = async (inputType: string, inputValue: string, displayValue: string) => {
+    if (!sessionId) return;
 
-    if (shouldOverwrite || display === "Error") {
-      console.log('→ Branch 1: Setting display to', d);
-      setDisplay(d);
-      setShouldOverwrite(false);
-    } else if (display === "0") {
-      console.log('→ Branch 2: Display is 0, setting to', d);
-      setDisplay(d);
+    const sequence = sequenceRef.current++;
+    const historyEntry: InputHistory = {
+      inputType,
+      inputValue,
+      displayValue,
+      sequenceNumber: sequence
+    };
+
+    // Update local history immediately for UI
+    setHistory(prev => [...prev, historyEntry]);
+
+    // Save to database asynchronously
+    try {
+      await supabase
+        .from('calculator_inputs')
+        .insert({
+          session_id: sessionId,
+          input_type: inputType,
+          input_value: inputValue,
+          display_value: displayValue,
+          sequence_number: sequence
+        });
+    } catch (err) {
+      console.error('Error logging calculator input:', err);
+    }
+  };
+
+  const inputDigit = (digit: string) => {
+    let newDisplay: string;
+
+    if (waitingForOperand) {
+      newDisplay = digit;
+      setDisplay(digit);
+      setWaitingForOperand(false);
     } else {
-      console.log('→ Branch 3: Appending', d, 'to', display);
-      setDisplay(display + d);
+      newDisplay = display === "0" ? digit : display + digit;
+      setDisplay(newDisplay);
     }
-    console.log('=== inputDigit END ===');
+
+    // Log the digit input
+    logInput('digit', digit, newDisplay);
   };
 
   const inputDot = () => {
-    if (shouldOverwrite || display === "Error") {
-      setDisplay("0.");
-      setShouldOverwrite(false);
-    } else if (!display.includes(".")) {
-      setDisplay(display + ".");
-    }
-  };
+    let newDisplay: string;
 
-  const changeSign = () => {
-    if (display.startsWith("-")) {
-      setDisplay(display.slice(1));
-    } else if (display !== "0") {
-      setDisplay("-" + display);
-    }
-  };
-
-  const backspace = () => {
-    if (display.length <= 1 || (display.length === 2 && display.startsWith("-"))) {
-      setDisplay("0");
-      setShouldOverwrite(true);
+    if (waitingForOperand) {
+      newDisplay = "0.";
+      setDisplay(newDisplay);
+      setWaitingForOperand(false);
+    } else if (display.indexOf(".") === -1) {
+      newDisplay = display + ".";
+      setDisplay(newDisplay);
     } else {
-      setDisplay(display.slice(0, -1));
+      return; // Don't log if nothing changed
     }
+
+    logInput('digit', '.', newDisplay);
   };
 
-  const clearEntry = () => {
+  const clearDisplay = () => {
     setDisplay("0");
-    setShouldOverwrite(true);
+    logInput('clear', 'CE', '0');
   };
 
   const clearAll = () => {
     setDisplay("0");
-    setAcc(null);
-    setOp(null);
-    setShouldOverwrite(true);
+    setPreviousValue(null);
+    setOperation(null);
+    setWaitingForOperand(false);
+    logInput('clear', 'CA', '0');
   };
 
-  const doUnary = (kind: "sqrt" | "inv" | "percent") => {
-    const x = toNumber(display);
-    let result: number;
+  const performOperation = (nextOperation: string) => {
+    const inputValue = parseFloat(display);
+    let newDisplay = display;
 
-    if (kind === "sqrt") {
-      if (x < 0) {
-        setDisplay("Error");
-        setShouldOverwrite(true);
-        return;
-      }
-      result = Math.sqrt(x);
-    } else if (kind === "inv") {
-      if (x === 0) {
-        setDisplay("Error");
-        setShouldOverwrite(true);
-        return;
-      }
-      result = 1 / x;
+    if (previousValue === null) {
+      setPreviousValue(inputValue);
+    } else if (operation) {
+      const currentValue = previousValue || 0;
+      const newValue = calculate(currentValue, inputValue, operation);
+      newDisplay = String(newValue);
+      setDisplay(newDisplay);
+      setPreviousValue(newValue);
+    }
+
+    setWaitingForOperand(true);
+    setOperation(nextOperation);
+    logInput('operator', nextOperation, newDisplay);
+  };
+
+  const calculate = (firstValue: number, secondValue: number, operation: string): number => {
+    switch (operation) {
+      case "+":
+        return firstValue + secondValue;
+      case "-":
+        return firstValue - secondValue;
+      case "*":
+        return firstValue * secondValue;
+      case "/":
+        return firstValue / secondValue;
+      case "=":
+        return secondValue;
+      default:
+        return secondValue;
+    }
+  };
+
+  const performEquals = () => {
+    const inputValue = parseFloat(display);
+    let newDisplay = display;
+
+    if (previousValue !== null && operation) {
+      const newValue = calculate(previousValue, inputValue, operation);
+      newDisplay = String(newValue);
+      setDisplay(newDisplay);
+      setPreviousValue(null);
+      setOperation(null);
+      setWaitingForOperand(true);
+    }
+
+    logInput('equals', '=', newDisplay);
+  };
+
+  const performSquareRoot = () => {
+    const value = parseFloat(display);
+    let newDisplay: string;
+
+    if (value < 0) {
+      newDisplay = "Error";
     } else {
-      if (acc !== null && op) {
-        result = acc * (x / 100);
-      } else {
-        result = x / 100;
-      }
+      newDisplay = String(Math.sqrt(value));
     }
 
-    setDisplay(format(result));
-    setShouldOverwrite(true);
+    setDisplay(newDisplay);
+    setWaitingForOperand(true);
+    logInput('function', 'sqrt', newDisplay);
   };
 
-  const chooseOperator = (nextOp: "+" | "-" | "*" | "/") => {
-    const x = toNumber(display);
+  const performReciprocal = () => {
+    const value = parseFloat(display);
+    let newDisplay: string;
 
-    if (acc === null) {
-      setAcc(x);
-    } else if (!shouldOverwrite && op) {
-      const result = compute(acc, x, op);
-      setDisplay(format(result));
-      setAcc(result);
+    if (value === 0) {
+      newDisplay = "Error";
+    } else {
+      newDisplay = String(1 / value);
     }
 
-    setOp(nextOp);
-    setShouldOverwrite(true);
+    setDisplay(newDisplay);
+    setWaitingForOperand(true);
+    logInput('function', '1/x', newDisplay);
   };
 
-  const equals = () => {
-    const x = toNumber(display);
-    if (op && acc !== null) {
-      const result = compute(acc, x, op);
-      setDisplay(format(result));
-      setAcc(null);
-      setOp(null);
-      setShouldOverwrite(true);
+  const performPercentage = () => {
+    const value = parseFloat(display);
+    let newDisplay: string;
+
+    if (previousValue !== null) {
+      newDisplay = String((previousValue * value) / 100);
+    } else {
+      newDisplay = String(value / 100);
     }
+
+    setDisplay(newDisplay);
+    setWaitingForOperand(true);
+    logInput('function', '%', newDisplay);
   };
 
-  const memoryClear = () => setMemory(0);
+  const toggleSign = () => {
+    const value = parseFloat(display);
+    const newDisplay = String(value * -1);
+    setDisplay(newDisplay);
+    logInput('function', '+/-', newDisplay);
+  };
+
+  const backspace = () => {
+    const newDisplay = display.slice(0, -1);
+    const finalDisplay = newDisplay === "" || newDisplay === "-" ? "0" : newDisplay;
+    setDisplay(finalDisplay);
+    logInput('function', 'Backspace', finalDisplay);
+  };
+
+  const memoryClear = () => {
+    setMemory(0);
+    logInput('memory', 'MC', display);
+  };
 
   const memoryRecall = () => {
-    setDisplay(format(memory));
-    setShouldOverwrite(true);
+    const newDisplay = String(memory);
+    setDisplay(newDisplay);
+    setWaitingForOperand(true);
+    logInput('memory', 'MR', newDisplay);
   };
 
-  const memoryStore = () => setMemory(toNumber(display));
+  const memoryStore = () => {
+    setMemory(parseFloat(display));
+    logInput('memory', 'MS', display);
+  };
 
-  const memoryAdd = () => setMemory(memory + toNumber(display));
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const { key } = e;
-      if (/^[0-9]$/.test(key)) {
-        inputDigit(key);
-      } else if (key === ".") {
-        inputDot();
-      } else if (["+", "-", "*", "/"].includes(key)) {
-        chooseOperator(key as "+" | "-" | "*" | "/");
-      } else if (["Enter", "="].includes(key)) {
-        equals();
-      } else if (key === "Backspace") {
-        backspace();
-      } else if (key.toLowerCase() === "c") {
-        clearEntry();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [display, shouldOverwrite, acc, op, memory]);
+  const memoryAdd = () => {
+    setMemory(memory + parseFloat(display));
+    logInput('memory', 'M+', display);
+  };
 
   const hasMemory = memory !== 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div style={styles.shell}>
-        <div style={styles.titleBar}>
-          <div style={styles.title}>Calculator</div>
-          <button aria-label="Close" style={styles.closeBtn} onClick={onClose}>✕</button>
+      <div style={styles.container}>
+        <div style={styles.shell}>
+          <div style={styles.titleBar}>
+            <div style={styles.title}>Calculator</div>
+            <div style={styles.titleButtons}>
+              <button
+                style={styles.historyBtn}
+                onClick={() => setShowHistory(!showHistory)}
+                title="Show history"
+              >
+                H
+              </button>
+              <button
+                aria-label="Close"
+                style={styles.closeBtn}
+                onClick={onClose}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div style={styles.displayRow}>
+            <div style={styles.memCell}>{hasMemory ? "M" : ""}</div>
+            <input style={styles.display} value={display} readOnly />
+          </div>
+
+          <div style={styles.grid}>
+            <Button label="MC" onClick={memoryClear} orange />
+            <Button label="Backspace" onClick={backspace} red />
+            <Button label="CE" onClick={clearDisplay} red />
+            <Button label="CA" onClick={clearAll} red />
+            <Button label="sqrt" onClick={performSquareRoot} />
+
+            <Button label="MR" onClick={memoryRecall} orange />
+            <Button label="7" onClick={() => inputDigit("7")} blue />
+            <Button label="8" onClick={() => inputDigit("8")} blue />
+            <Button label="9" onClick={() => inputDigit("9")} blue />
+            <Button label="/" onClick={() => performOperation("/")} />
+            <Button label="%" onClick={performPercentage} />
+
+            <Button label="MS" onClick={memoryStore} orange />
+            <Button label="4" onClick={() => inputDigit("4")} blue />
+            <Button label="5" onClick={() => inputDigit("5")} blue />
+            <Button label="6" onClick={() => inputDigit("6")} blue />
+            <Button label="*" onClick={() => performOperation("*")} />
+            <Button label="1/x" onClick={performReciprocal} />
+
+            <Button label="M+" onClick={memoryAdd} orange />
+            <Button label="1" onClick={() => inputDigit("1")} blue />
+            <Button label="2" onClick={() => inputDigit("2")} blue />
+            <Button label="3" onClick={() => inputDigit("3")} blue />
+            <Button label="-" onClick={() => performOperation("-")} />
+            <Button label="=" onClick={performEquals} red />
+
+            <div></div>
+            <Button label="0" onClick={() => inputDigit("0")} blue />
+            <Button label="+/-" onClick={toggleSign} />
+            <Button label="." onClick={inputDot} />
+            <Button label="+" onClick={() => performOperation("+")} />
+          </div>
         </div>
 
-        <div style={styles.displayRow}>
-          <div style={styles.memCell}>{hasMemory ? "M" : ""}</div>
-          <input style={styles.display} value={display} readOnly />
-        </div>
-
-        <div style={styles.grid}>
-          <Button label="MC" onClick={memoryClear} orange />
-          <Button label="Backspace" onClick={backspace} red />
-          <Button label="CE" onClick={clearEntry} red />
-          <Button label="CA" onClick={clearAll} red />
-          <Button label="sqrt" onClick={() => doUnary("sqrt")} />
-
-          <Button label="MR" onClick={memoryRecall} orange />
-          <Button label="7" onClick={() => inputDigit("7")} blue />
-          <Button label="8" onClick={() => inputDigit("8")} blue />
-          <Button label="9" onClick={() => inputDigit("9")} blue />
-          <Button label="/" onClick={() => chooseOperator("/")} />
-          <Button label="%" onClick={() => doUnary("percent")} />
-
-          <Button label="MS" onClick={memoryStore} orange />
-          <Button label="4" onClick={() => inputDigit("4")} blue />
-          <Button label="5" onClick={() => inputDigit("5")} blue />
-          <Button label="6" onClick={() => inputDigit("6")} blue />
-          <Button label="*" onClick={() => chooseOperator("*")} />
-          <Button label="1/x" onClick={() => doUnary("inv")} />
-
-          <Button label="M+" onClick={memoryAdd} orange />
-          <Button label="1" onClick={() => inputDigit("1")} blue />
-          <Button label="2" onClick={() => inputDigit("2")} blue />
-          <Button label="3" onClick={() => inputDigit("3")} blue />
-          <Button label="-" onClick={() => chooseOperator("-")} />
-          <Button label="=" onClick={equals} red />
-
-          <div></div>
-          <Button label="0" onClick={() => inputDigit("0")} blue />
-          <Button label="+/-" onClick={changeSign} />
-          <Button label="." onClick={inputDot} />
-          <Button label="+" onClick={() => chooseOperator("+")} />
-        </div>
+        {/* History Panel */}
+        {showHistory && (
+          <div style={styles.historyPanel}>
+            <div style={styles.historyHeader}>
+              <strong>Input History</strong>
+              <span style={styles.historyCount}>({history.length} inputs)</span>
+            </div>
+            <div style={styles.historyList}>
+              {history.length === 0 ? (
+                <div style={styles.historyEmpty}>No inputs yet</div>
+              ) : (
+                history.map((entry, idx) => (
+                  <div key={idx} style={styles.historyItem}>
+                    <span style={styles.historySeq}>#{entry.sequenceNumber + 1}</span>
+                    <span style={styles.historyType}>{entry.inputType}</span>
+                    <span style={styles.historyValue}>"{entry.inputValue}"</span>
+                    <span style={styles.historyDisplay}>→ {entry.displayValue}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -249,6 +415,11 @@ function Button({ label, onClick, red, blue, orange }: any) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  container: {
+    display: "flex",
+    gap: 12,
+    alignItems: "flex-start",
+  },
   shell: {
     width: 330,
     border: "2px solid #2a2a2a",
@@ -257,7 +428,6 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
     fontFamily: "Segoe UI, Tahoma, Arial, sans-serif",
     overflow: "hidden",
-    margin: "auto",
   },
   titleBar: {
     background: "linear-gradient(#0b3fa6, #072c74)",
@@ -269,6 +439,21 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0 8px",
   },
   title: { fontWeight: 700, fontSize: 13 },
+  titleButtons: {
+    display: "flex",
+    gap: 6,
+  },
+  historyBtn: {
+    background: "#4a8dd6",
+    color: "#fff",
+    border: "1px solid #fff",
+    borderRadius: 2,
+    width: 18,
+    height: 18,
+    fontWeight: 700,
+    cursor: "pointer",
+    fontSize: 11,
+  },
   closeBtn: {
     background: "#ff3c2e",
     color: "#fff",
@@ -326,4 +511,69 @@ const styles: Record<string, React.CSSProperties> = {
   btnRed: { color: "#b80000", fontWeight: 700 },
   btnBlue: { color: "#0047ff", fontWeight: 600 },
   btnOrange: { color: "#d46b00", fontWeight: 700 },
+  historyPanel: {
+    width: 350,
+    maxHeight: 440,
+    border: "2px solid #2a2a2a",
+    borderRadius: 4,
+    background: "#fff",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+    fontFamily: "Segoe UI, Tahoma, Arial, sans-serif",
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column" as const,
+  },
+  historyHeader: {
+    background: "#f5f5f5",
+    borderBottom: "1px solid #ddd",
+    padding: "8px 12px",
+    fontSize: 13,
+    fontWeight: 600,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  historyCount: {
+    fontSize: 11,
+    color: "#666",
+    fontWeight: 400,
+  },
+  historyList: {
+    flex: 1,
+    overflowY: "auto" as const,
+    padding: 8,
+  },
+  historyEmpty: {
+    padding: 20,
+    textAlign: "center" as const,
+    color: "#999",
+    fontSize: 13,
+  },
+  historyItem: {
+    padding: "6px 8px",
+    fontSize: 11,
+    borderBottom: "1px solid #f0f0f0",
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    fontFamily: "Consolas, Monaco, monospace",
+  },
+  historySeq: {
+    color: "#999",
+    fontSize: 10,
+    minWidth: 30,
+  },
+  historyType: {
+    color: "#0066cc",
+    fontWeight: 600,
+    minWidth: 60,
+  },
+  historyValue: {
+    color: "#cc6600",
+    fontWeight: 600,
+  },
+  historyDisplay: {
+    color: "#333",
+    marginLeft: "auto",
+  },
 };
