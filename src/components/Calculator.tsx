@@ -30,15 +30,14 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
   const [history, setHistory] = useState<InputHistory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const sequenceRef = useRef(0);
+  const sessionIdRef = useRef<string | null>(null);
 
   // Initialize session on mount
   useEffect(() => {
     initializeSession();
     return () => {
       // Close session on unmount
-      if (sessionId) {
-        closeSession();
-      }
+      closeSession();
     };
   }, []);
 
@@ -60,6 +59,7 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
       if (error) throw error;
       if (data) {
         setSessionId(data.id);
+        sessionIdRef.current = data.id;
         console.log('Calculator session started:', data.id);
       }
     } catch (err) {
@@ -72,18 +72,21 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
    * Updates the ended_at timestamp
    */
   const closeSession = async () => {
-    if (!sessionId) return;
+    const id = sessionIdRef.current;
+    if (!id) return;
 
     try {
       await supabase
         .from('calculator_sessions')
         .update({ ended_at: new Date().toISOString() })
-        .eq('id', sessionId);
+        .eq('id', id);
 
       console.log('Calculator session ended');
     } catch (err) {
       console.error('Error closing calculator session:', err);
     }
+
+    sessionIdRef.current = null;
   };
 
   /**
@@ -95,8 +98,6 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
    * @param displayValue - Current calculator display after this input
    */
   const logInput = async (inputType: string, inputValue: string, displayValue: string) => {
-    if (!sessionId) return;
-
     const sequence = sequenceRef.current++;
     const historyEntry: InputHistory = {
       inputType,
@@ -108,12 +109,15 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
     // Update local history immediately for UI
     setHistory(prev => [...prev, historyEntry]);
 
+    const id = sessionIdRef.current;
+    if (!id) return;
+
     // Save to database asynchronously
     try {
       await supabase
         .from('calculator_inputs')
         .insert({
-          session_id: sessionId,
+          session_id: id,
           input_type: inputType,
           input_value: inputValue,
           display_value: displayValue,
@@ -167,7 +171,7 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
     setPreviousValue(null);
     setOperation(null);
     setWaitingForOperand(false);
-    logInput('clear', 'CA', '0');
+    logInput('clear', 'C', '0');
   };
 
   const performOperation = (nextOperation: string) => {
@@ -303,7 +307,43 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
     logInput('memory', 'M+', display);
   };
 
+  const memorySubtract = () => {
+    setMemory(memory - parseFloat(display));
+    logInput('memory', 'M-', display);
+  };
+
   const hasMemory = memory !== 0;
+
+  const buttonConfigs: CalculatorButtonProps[] = [
+    { label: 'MC', row: 1, col: 1, variant: 'memory', onClick: memoryClear },
+    { label: 'MR', row: 1, col: 2, variant: 'memory', onClick: memoryRecall },
+    { label: 'MS', row: 1, col: 3, variant: 'memory', onClick: memoryStore },
+    { label: 'M+', row: 1, col: 4, variant: 'memory', onClick: memoryAdd },
+    { label: 'M-', row: 1, col: 5, variant: 'memory', onClick: memorySubtract },
+    { label: '⌫', row: 2, col: 1, variant: 'control', onClick: backspace, ariaLabel: 'Backspace' },
+    { label: 'CE', row: 2, col: 2, variant: 'control', onClick: clearDisplay },
+    { label: 'C', row: 2, col: 3, variant: 'control', onClick: clearAll },
+    { label: '±', row: 2, col: 4, variant: 'control', onClick: toggleSign, ariaLabel: 'Toggle sign' },
+    { label: '√', row: 2, col: 5, variant: 'control', onClick: performSquareRoot, ariaLabel: 'Square root' },
+    { label: '7', row: 3, col: 1, variant: 'number', onClick: () => inputDigit("7") },
+    { label: '8', row: 3, col: 2, variant: 'number', onClick: () => inputDigit("8") },
+    { label: '9', row: 3, col: 3, variant: 'number', onClick: () => inputDigit("9") },
+    { label: '/', row: 3, col: 4, variant: 'operator', onClick: () => performOperation("/") },
+    { label: '%', row: 3, col: 5, variant: 'control', onClick: performPercentage },
+    { label: '4', row: 4, col: 1, variant: 'number', onClick: () => inputDigit("4") },
+    { label: '5', row: 4, col: 2, variant: 'number', onClick: () => inputDigit("5") },
+    { label: '6', row: 4, col: 3, variant: 'number', onClick: () => inputDigit("6") },
+    { label: '*', row: 4, col: 4, variant: 'operator', onClick: () => performOperation("*") },
+    { label: '1/x', row: 4, col: 5, variant: 'control', onClick: performReciprocal },
+    { label: '1', row: 5, col: 1, variant: 'number', onClick: () => inputDigit("1") },
+    { label: '2', row: 5, col: 2, variant: 'number', onClick: () => inputDigit("2") },
+    { label: '3', row: 5, col: 3, variant: 'number', onClick: () => inputDigit("3") },
+    { label: '-', row: 5, col: 4, variant: 'operator', onClick: () => performOperation("-") },
+    { label: '=', row: 5, col: 5, variant: 'equals', onClick: performEquals, rowSpan: 2 },
+    { label: '0', row: 6, col: 1, variant: 'number', onClick: () => inputDigit("0"), colSpan: 2 },
+    { label: '.', row: 6, col: 3, variant: 'number', onClick: inputDot },
+    { label: '+', row: 6, col: 4, variant: 'operator', onClick: () => performOperation("+") },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -335,38 +375,19 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
           </div>
 
           <div style={styles.grid}>
-            <Button label="MC" onClick={memoryClear} orange />
-            <Button label="Backspace" onClick={backspace} red />
-            <Button label="CE" onClick={clearDisplay} red />
-            <Button label="CA" onClick={clearAll} red />
-            <Button label="sqrt" onClick={performSquareRoot} />
-
-            <Button label="MR" onClick={memoryRecall} orange />
-            <Button label="7" onClick={() => inputDigit("7")} blue />
-            <Button label="8" onClick={() => inputDigit("8")} blue />
-            <Button label="9" onClick={() => inputDigit("9")} blue />
-            <Button label="/" onClick={() => performOperation("/")} />
-            <Button label="%" onClick={performPercentage} />
-
-            <Button label="MS" onClick={memoryStore} orange />
-            <Button label="4" onClick={() => inputDigit("4")} blue />
-            <Button label="5" onClick={() => inputDigit("5")} blue />
-            <Button label="6" onClick={() => inputDigit("6")} blue />
-            <Button label="*" onClick={() => performOperation("*")} />
-            <Button label="1/x" onClick={performReciprocal} />
-
-            <Button label="M+" onClick={memoryAdd} orange />
-            <Button label="1" onClick={() => inputDigit("1")} blue />
-            <Button label="2" onClick={() => inputDigit("2")} blue />
-            <Button label="3" onClick={() => inputDigit("3")} blue />
-            <Button label="-" onClick={() => performOperation("-")} />
-            <Button label="=" onClick={performEquals} red />
-
-            <div></div>
-            <Button label="0" onClick={() => inputDigit("0")} blue />
-            <Button label="+/-" onClick={toggleSign} />
-            <Button label="." onClick={inputDot} />
-            <Button label="+" onClick={() => performOperation("+")} />
+            {buttonConfigs.map((btn) => (
+              <Button
+                key={`${btn.label}-${btn.row}-${btn.col}`}
+                label={btn.label}
+                onClick={btn.onClick}
+                variant={btn.variant}
+                colSpan={btn.colSpan}
+                rowSpan={btn.rowSpan}
+                row={btn.row}
+                col={btn.col}
+                ariaLabel={btn.ariaLabel}
+              />
+            ))}
           </div>
         </div>
 
@@ -398,16 +419,92 @@ export default function Calculator({ onClose, testAttemptId }: CalculatorProps) 
   );
 }
 
-function Button({ label, onClick, red, blue, orange }: any) {
+type ButtonVariant = 'number' | 'operator' | 'control' | 'memory' | 'equals';
+
+interface CalculatorButtonProps {
+  label: string;
+  onClick: () => void;
+  variant?: ButtonVariant;
+  colSpan?: number;
+  rowSpan?: number;
+  row: number;
+  col: number;
+  ariaLabel?: string;
+}
+
+function Button({
+  label,
+  onClick,
+  variant = 'number',
+  colSpan,
+  rowSpan,
+  row,
+  col,
+  ariaLabel,
+}: CalculatorButtonProps) {
+  const buttonStyle: React.CSSProperties = {
+    ...styles.btn,
+    ...(variant === 'number' ? styles.btnNumber : {}),
+    ...(variant === 'operator' ? styles.btnOperator : {}),
+    ...(variant === 'control' ? styles.btnControl : {}),
+    ...(variant === 'memory' ? styles.btnMemory : {}),
+    ...(variant === 'equals' ? styles.btnEquals : {}),
+    gridColumn: `${col} / span ${colSpan ?? 1}`,
+    gridRow: `${row} / span ${rowSpan ?? 1}`,
+  };
+  const baseShadow = typeof buttonStyle.boxShadow === 'string' ? buttonStyle.boxShadow : undefined;
+  const applyPressIn = (btn: HTMLButtonElement) => {
+    btn.style.transform = 'translateY(1px)';
+    btn.style.boxShadow = '0 1px 0 rgba(40,66,100,0.4)';
+  };
+
+  const applyPressOut = (btn: HTMLButtonElement) => {
+    btn.style.transform = 'translateY(0)';
+    if (baseShadow) {
+      btn.style.boxShadow = baseShadow;
+    }
+  };
+
+  const handleMouseDown = (event: React.MouseEvent<HTMLButtonElement>) => {
+    applyPressIn(event.currentTarget);
+  };
+
+  const handleMouseUp = (event: React.MouseEvent<HTMLButtonElement>) => {
+    applyPressOut(event.currentTarget);
+  };
+
+  const handleMouseLeave = (event: React.MouseEvent<HTMLButtonElement>) => {
+    applyPressOut(event.currentTarget);
+  };
+
+  const handleBlur = (event: React.FocusEvent<HTMLButtonElement>) => {
+    applyPressOut(event.currentTarget);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === ' ' || event.key === 'Space' || event.key === 'Enter') {
+      applyPressIn(event.currentTarget);
+    }
+  };
+
+  const handleKeyUp = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === ' ' || event.key === 'Space' || event.key === 'Enter') {
+      applyPressOut(event.currentTarget);
+    }
+  };
+
   return (
     <button
+      type="button"
       onClick={onClick}
-      style={{
-        ...styles.btn,
-        ...(red ? styles.btnRed : {}),
-        ...(blue ? styles.btnBlue : {}),
-        ...(orange ? styles.btnOrange : {}),
-      }}
+      aria-label={ariaLabel || label}
+      style={buttonStyle}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseLeave}
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
+      onKeyUp={handleKeyUp}
     >
       {label}
     </button>
@@ -417,163 +514,205 @@ function Button({ label, onClick, red, blue, orange }: any) {
 const styles: Record<string, React.CSSProperties> = {
   container: {
     display: "flex",
-    gap: 12,
+    gap: 16,
     alignItems: "flex-start",
+    userSelect: "none",
   },
   shell: {
-    width: 330,
-    border: "2px solid #2a2a2a",
-    borderRadius: 4,
-    background: "#ececec",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+    width: 360,
+    border: "1px solid #1f497d",
+    borderRadius: 6,
+    background: "#f1f5fb",
+    boxShadow: "0 10px 40px rgba(12, 46, 89, 0.28)",
     fontFamily: "Segoe UI, Tahoma, Arial, sans-serif",
     overflow: "hidden",
   },
   titleBar: {
-    background: "linear-gradient(#0b3fa6, #072c74)",
+    background: "linear-gradient(90deg,#0f60a3,#0b3b6f)",
     color: "#fff",
-    height: 26,
+    height: 34,
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "0 8px",
+    padding: "0 12px",
+    boxShadow: "inset 0 -1px 0 rgba(255,255,255,0.25)",
   },
-  title: { fontWeight: 700, fontSize: 13 },
+  title: { fontWeight: 600, fontSize: 14, letterSpacing: 0.3 },
   titleButtons: {
     display: "flex",
-    gap: 6,
+    gap: 8,
   },
   historyBtn: {
-    background: "#4a8dd6",
+    background: "linear-gradient(#5ea4e7,#3d7cc1)",
     color: "#fff",
-    border: "1px solid #fff",
-    borderRadius: 2,
-    width: 18,
-    height: 18,
-    fontWeight: 700,
-    cursor: "pointer",
-    fontSize: 11,
-  },
-  closeBtn: {
-    background: "#ff3c2e",
-    color: "#fff",
-    border: "2px solid #fff",
-    borderRadius: 2,
-    width: 18,
-    height: 18,
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  displayRow: {
-    display: "grid",
-    gridTemplateColumns: "60px 1fr",
-    gap: 6,
-    padding: 6,
-  },
-  memCell: {
-    background: "#d8d8d8",
-    border: "1px solid #bfbfbf",
+    border: "1px solid rgba(255,255,255,0.8)",
     borderRadius: 3,
-    height: 28,
-    fontSize: 14,
+    width: 22,
+    height: 22,
+    fontWeight: 700,
+    cursor: "pointer",
+    fontSize: 12,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "#444",
+  },
+  closeBtn: {
+    background: "linear-gradient(#ff6e67,#d93d34)",
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.85)",
+    borderRadius: 3,
+    width: 22,
+    height: 22,
+    fontWeight: 700,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  displayRow: {
+    display: "grid",
+    gridTemplateColumns: "64px 1fr",
+    gap: 8,
+    padding: "14px 16px 12px",
+  },
+  memCell: {
+    background: "linear-gradient(#dfe7f3,#c6d3e5)",
+    border: "1px solid #aabbd4",
+    borderRadius: 4,
+    height: 38,
+    fontSize: 15,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#345171",
+    fontWeight: 600,
   },
   display: {
-    height: 30,
-    padding: "0 8px",
-    border: "1px solid #bfbfbf",
-    borderRadius: 3,
-    background: "#f7f7f7",
+    height: 38,
+    padding: "0 12px",
+    border: "1px solid #a2b6d2",
+    borderRadius: 4,
+    background: "#fdfefe",
     textAlign: "right" as const,
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 600,
-    color: "#222",
+    color: "#112942",
+    boxShadow: "inset 0 1px 4px rgba(15,53,102,0.25)",
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(6, 1fr)",
-    gap: 6,
-    padding: 8,
+    gridTemplateColumns: "repeat(5, 1fr)",
+    gridTemplateRows: "repeat(6, 1fr)",
+    gap: 8,
+    padding: "0 16px 18px",
+    position: "relative",
+    gridAutoRows: 52,
   },
   btn: {
-    height: 34,
+    height: "100%",
     borderRadius: 6,
-    border: "1px solid #bdbdbd",
-    background: "linear-gradient(#f3f3f3, #d8d8d8)",
-    boxShadow: "inset 0 1px 0 #fff, 0 1px 2px rgba(0,0,0,0.2)",
+    border: "1px solid #b9c8df",
+    background: "linear-gradient(#fdfefe,#e3ecf7)",
+    boxShadow: "0 3px 0 #c3d2e8, inset 0 1px 0 rgba(255,255,255,0.9)",
     cursor: "pointer",
-    fontSize: 14,
-    color: "#1a1a1a",
+    fontSize: 15,
+    fontWeight: 600,
+    color: "#1d2f44",
+    transition: "transform 0.05s ease, box-shadow 0.05s ease",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  btnRed: { color: "#b80000", fontWeight: 700 },
-  btnBlue: { color: "#0047ff", fontWeight: 600 },
-  btnOrange: { color: "#d46b00", fontWeight: 700 },
+  btnNumber: {
+    background: "linear-gradient(#ffffff,#e9f1fb)",
+  },
+  btnOperator: {
+    background: "linear-gradient(#f4f8ff,#d7e4f7)",
+    color: "#0c4170",
+  },
+  btnControl: {
+    background: "linear-gradient(#fff6f5,#f1dedd)",
+    color: "#92322d",
+  },
+  btnMemory: {
+    background: "linear-gradient(#fff9f0,#f5e1c7)",
+    color: "#7b4c15",
+  },
+  btnEquals: {
+    background: "linear-gradient(#ffb067,#f97a34)",
+    color: "#fff",
+    borderColor: "#e86b25",
+    boxShadow: "0 3px 0 #dc6a32, inset 0 1px 0 rgba(255,255,255,0.65)",
+    fontSize: 18,
+  },
   historyPanel: {
-    width: 350,
+    width: 320,
     maxHeight: 440,
-    border: "2px solid #2a2a2a",
-    borderRadius: 4,
-    background: "#fff",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+    border: "1px solid #1f497d",
+    borderRadius: 6,
+    background: "#ffffff",
+    boxShadow: "0 10px 40px rgba(12, 46, 89, 0.22)",
     fontFamily: "Segoe UI, Tahoma, Arial, sans-serif",
     overflow: "hidden",
     display: "flex",
     flexDirection: "column" as const,
   },
   historyHeader: {
-    background: "#f5f5f5",
-    borderBottom: "1px solid #ddd",
-    padding: "8px 12px",
+    background: "linear-gradient(90deg,#e9f0fb,#d3e0f7)",
+    borderBottom: "1px solid #bfd0ec",
+    padding: "10px 14px",
     fontSize: 13,
     fontWeight: 600,
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
+    color: "#143458",
   },
   historyCount: {
     fontSize: 11,
-    color: "#666",
-    fontWeight: 400,
+    color: "#4c6a92",
+    fontWeight: 500,
   },
   historyList: {
     flex: 1,
     overflowY: "auto" as const,
-    padding: 8,
+    padding: 10,
+    background: "#f6f9ff",
   },
   historyEmpty: {
-    padding: 20,
+    padding: 24,
     textAlign: "center" as const,
-    color: "#999",
+    color: "#8196b5",
     fontSize: 13,
   },
   historyItem: {
-    padding: "6px 8px",
+    padding: "8px 10px",
     fontSize: 11,
-    borderBottom: "1px solid #f0f0f0",
+    borderBottom: "1px solid #dde6f4",
     display: "flex",
     gap: 8,
     alignItems: "center",
     fontFamily: "Consolas, Monaco, monospace",
+    color: "#10253d",
   },
   historySeq: {
-    color: "#999",
+    color: "#7d93b5",
     fontSize: 10,
-    minWidth: 30,
+    minWidth: 32,
   },
   historyType: {
-    color: "#0066cc",
+    color: "#0f4e8a",
     fontWeight: 600,
-    minWidth: 60,
+    minWidth: 64,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
   historyValue: {
-    color: "#cc6600",
+    color: "#c06418",
     fontWeight: 600,
   },
   historyDisplay: {
-    color: "#333",
+    color: "#1b3a5c",
     marginLeft: "auto",
   },
 };
