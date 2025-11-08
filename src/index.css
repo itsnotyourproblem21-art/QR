@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .calc-btn {
+    @apply px-3 py-3 text-sm font-semibold border border-gray-400 hover:bg-gray-200 active:bg-gray-300 transition rounded shadow-sm;
+  }
+}
